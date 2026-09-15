@@ -1,0 +1,53 @@
+name: build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack:
+    name: pack npm tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # dist/ is the published entry point ("main": "dist/jquery.js") and is
+      # generated from src/ by the project's own grunt build (the task `npm test`
+      # runs on Travis). The committed copies are the untouched 1.11.1 release
+      # build, so regenerate them from the patched src/ before packing.
+      - name: Rebuild dist from src with the publishing-era toolchain
+        run: |
+          docker run --rm -v "$PWD":/src node:0.10 sh -c '
+            set -e
+            cp -r /src /build
+            cd /build
+            rm -rf node_modules artifacts *.tgz
+            npm install || {
+              npm config set strict-ssl false
+              npm config set registry https://time-machines-npm.sealsecurity.io/
+              npm config set //time-machines-npm.sealsecurity.io/:_authToken 2014-05-02T00:00:00.000000Z
+              npm install
+            }
+            ./node_modules/.bin/grunt
+            cp dist/jquery.js dist/jquery.min.js dist/jquery.min.map /src/dist/
+          '
+          sudo chown -R "$(id -u):$(id -g)" dist
+          ls -l dist
+
+      - name: Generate the dist/cdn release copies
+        run: node .github/cdn.js
+
+      - name: Pack with the publishing-era npm
+        run: |
+          mkdir -p artifacts
+          docker run --rm -v "$PWD":/src -v "$PWD/artifacts":/out node:0.10 \
+            sh -c 'cp -r /src /build && cd /build && rm -rf .git .github artifacts *.tgz && npm pack && cp *.tgz /out/'
+          sudo chown -R "$(id -u):$(id -g)" artifacts
+          ls -l artifacts
+
+      - name: Upload the tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: artifacts/jquery-1.11.1.tgz
+          if-no-files-found: error
